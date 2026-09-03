@@ -226,26 +226,45 @@ document.getElementById("btnExport").onclick = function () {
   const btn = document.getElementById("btnExport");
   const hint = document.getElementById("exportHint");
   btn.disabled = true;
-  hint.innerText = "Export demandé au boîtier — préparation du fichier (~10-15 s)...";
+  hint.innerText = "Export demandé au boîtier — préparation du fichier...";
+
   envoyerCommande("EXPORT").then(function () {
-    setTimeout(function () {
-      const nom = currentSdFile || "export.csv";
+    const nom = currentSdFile || "export.csv";
+    // Le pipeline complet (attente du prochain cycle NB1500, lecture SD sur
+    // le Mega, upload via le relais cellulaire jusqu'à Supabase) peut prendre
+    // largement plus de 12s selon la taille du fichier et la qualité réseau.
+    // On réessaie donc plusieurs fois sur une fenêtre de ~60s au lieu d'un
+    // délai fixe unique.
+    const DELAI_INITIAL_MS = 6000;
+    const INTERVALLE_MS = 4000;
+    const TENTATIVES_MAX = 14; // 6s + 14*4s ≈ 62s au total
+
+    let tentative = 0;
+    function essayerTelechargement() {
+      tentative++;
+      hint.innerText = "Recherche du fichier sur Supabase... (tentative " + tentative + "/" + TENTATIVES_MAX + ")";
       fetch(SUPABASE_URL + "/storage/v1/object/exports/" + encodeURIComponent(nom), { headers: HEADERS })
-        .then(function (r) { if (!r.ok) throw new Error("not ready"); return r.blob(); })
+        .then(function (r) { if (!r.ok) throw new Error("not ready " + r.status); return r.blob(); })
         .then(function (blob) {
           const a = document.createElement("a");
           a.href = URL.createObjectURL(blob);
           a.download = nom;
           document.body.appendChild(a); a.click(); a.remove();
           hint.innerText = "Téléchargé : " + nom;
+          btn.disabled = false;
         })
         .catch(function () {
-          hint.innerText = "Fichier pas encore prêt côté Supabase — réessayez dans quelques secondes.";
-        })
-        .finally(function () { btn.disabled = false; });
-    }, 12000);
+          if (tentative < TENTATIVES_MAX) {
+            setTimeout(essayerTelechargement, INTERVALLE_MS);
+          } else {
+            hint.innerText = "Échec : le fichier n'est jamais apparu sur Supabase (vérifier les logs du relais et les policies du bucket 'exports').";
+            btn.disabled = false;
+          }
+        });
+    }
+    setTimeout(essayerTelechargement, DELAI_INITIAL_MS);
   }).catch(function () {
-    hint.innerText = "Échec de la demande d'export.";
+    hint.innerText = "Échec de la demande d'export (commande non envoyée à Supabase).";
     btn.disabled = false;
   });
 };
