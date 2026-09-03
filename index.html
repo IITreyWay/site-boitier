@@ -162,7 +162,11 @@ function majUI(d) {
 }
 
 function chargerDernier() {
-  fetch(SUPABASE_URL + "/rest/v1/telemetry?select=*&order=ep.desc&limit=1", { headers: HEADERS })
+  // [FIX] Tri par "id" (clé auto-incrémentée, garantie croissante à
+  // l'insertion) plutôt que par "ep" (horloge du boîtier). "ep" peut valoir
+  // une date fixe/incorrecte tant que le Mega n'a pas encore transmis
+  // l'heure RTC au MKR juste après un démarrage, ce qui fausserait l'ordre.
+  fetch(SUPABASE_URL + "/rest/v1/telemetry?select=*&order=id.desc&limit=1", { headers: HEADERS })
     .then(function (r) { return r.json(); })
     .then(function (rows) { if (rows && rows.length) majUI(rows[0]); })
     .catch(function () {});
@@ -201,7 +205,9 @@ function makeChart(id, c1, c2, c3) {
 }
 
 function chargerHistorique() {
-  fetch(SUPABASE_URL + "/rest/v1/telemetry?select=ep,t1,t2,t3,v1,v2,v3,a1,a2,a3&order=ep.desc&limit=180", { headers: HEADERS })
+  // [FIX] Même correctif : tri par "id" au lieu de "ep" pour la cohérence
+  // de l'ordre chronologique du graphique.
+  fetch(SUPABASE_URL + "/rest/v1/telemetry?select=ep,t1,t2,t3,v1,v2,v3,a1,a2,a3&order=id.desc&limit=180", { headers: HEADERS })
     .then(function (r) { return r.json(); })
     .then(function (rows) {
       if (!rows || !rows.length) return;
