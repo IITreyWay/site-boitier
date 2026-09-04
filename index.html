@@ -26,7 +26,6 @@ th,td{padding:6px;border:1px solid #eee;font-size:.85em;text-align:center}
 
 <div style="color:#fff;margin:15px 0;text-align:center">
   <span id="ts">--</span>
-  <span id="rtbadge" class="rt-badge" style="background:#7f8c8d">TEMPS REEL...</span>
   <br><div class="ip">Projet Supabase : <span id="proj">yrxrkjwrwbeavuhbiwaa</span><br>Table : telemetry</div>
 </div>
 
@@ -80,8 +79,6 @@ th,td{padding:6px;border:1px solid #eee;font-size:.85em;text-align:center}
 </div>
 
 <div class="card" style="text-align:center">
-  <button id="ctrl" class="btn blue">...</button>
-  <button id="btnReset" class="btn blue">RESET ENERGIE</button>
   <button id="btnExport" class="btn green">EXPORT CSV SD</button>
   <div class="hint" id="exportHint"></div>
 </div>
@@ -98,7 +95,7 @@ const HEADERS = { apikey: SUPABASE_KEY, Authorization: "Bearer " + SUPABASE_KEY 
 // d'utiliser fetch() brut vers l'API REST, inchangé)
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const OFFLINE_AFTER_MS = 15000; // 3-4x la cadence d'envoi du NB1500 (4s)
+const OFFLINE_AFTER_MS = 8000; // cadence visee 1s, mais NB-IoT peut etre plus lent en pratique — marge pour eviter les faux positifs
 const MAX_POINTS = 180;         // profondeur des graphiques
 
 let lastEp = null, lastSeenAt = 0;
@@ -163,19 +160,11 @@ function majUI(d) {
   document.getElementById("sdfile").innerText = currentSdFile || "---";
 
   isRunning = !!d.run;
-  const b = document.getElementById("ctrl");
-  if (isRunning) {
-    b.innerText = "ARRETER"; b.style.background = "#c0392b";
-    b.onclick = function () { envoyerCommande("STOP"); };
-  } else {
-    b.innerText = "DEMARRER"; b.style.background = "#27ae60";
-    b.onclick = function () { envoyerCommande("START"); };
-  }
 }
 
 // Chargement initial (une seule fois au chargement de la page) : on veut
 // un premier affichage immédiat sans attendre le prochain événement
-// Realtime, qui peut mettre jusqu'à 4s à arriver.
+// Realtime, qui peut mettre jusqu'à quelques secondes à arriver.
 function chargerDernier() {
   fetch(SUPABASE_URL + "/rest/v1/telemetry?select=*&order=id.desc&limit=1", { headers: HEADERS })
     .then(function (r) { return r.json(); })
@@ -247,7 +236,6 @@ function pousserPointGraphique(d) {
   });
 }
 
-document.getElementById("btnReset").onclick = function () { envoyerCommande("RESET"); };
 
 document.getElementById("btnExport").onclick = function () {
   const btn = document.getElementById("btnExport");
@@ -278,7 +266,7 @@ document.getElementById("btnExport").onclick = function () {
 };
 
 // ────────────────────────────────────────────────────────────────
-//  ABONNEMENT REALTIME — remplace le sondage toutes les 4s. Supabase
+//  ABONNEMENT REALTIME — remplace le sondage périodique. Supabase
 //  pousse la nouvelle ligne au navigateur via WebSocket dès qu'elle est
 //  insérée côté relais, sans délai d'attente lié à un intervalle fixe.
 //  ⚠️ Nécessite que la réplication Realtime soit activée sur la table
@@ -286,7 +274,6 @@ document.getElementById("btnExport").onclick = function () {
 //  alter publication supabase_realtime add table telemetry;)
 // ────────────────────────────────────────────────────────────────
 function demarrerRealtime() {
-  const rtb = document.getElementById("rtbadge");
   sb.channel("telemetry-live")
     .on("postgres_changes",
       { event: "INSERT", schema: "public", table: "telemetry" },
@@ -294,13 +281,7 @@ function demarrerRealtime() {
         majUI(payload.new);
         pousserPointGraphique(payload.new);
       })
-    .subscribe(function (status) {
-      if (status === "SUBSCRIBED") {
-        rtb.innerText = "TEMPS REEL"; rtb.style.background = "#27ae60";
-      } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
-        rtb.innerText = "RECONNEXION..."; rtb.style.background = "#e67e22";
-      }
-    });
+    .subscribe();
 }
 
 window.onload = function () {
