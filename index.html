@@ -162,13 +162,17 @@ function majUI(d) {
   isRunning = !!d.run;
 }
 
-// Chargement initial (une seule fois au chargement de la page) : on veut
-// un premier affichage immédiat sans attendre le prochain événement
-// Realtime, qui peut mettre jusqu'à quelques secondes à arriver.
+// Chargement initial + filet de secours (rappelé toutes les 3s) : à
+// chaque appel, met à jour les cartes ET pousse un point de graphique
+// si cette ligne n'a pas déjà été vue via Realtime (voir lastChartEp).
 function chargerDernier() {
   fetch(SUPABASE_URL + "/rest/v1/telemetry?select=*&order=id.desc&limit=1", { headers: HEADERS })
     .then(function (r) { return r.json(); })
-    .then(function (rows) { if (rows && rows.length) majUI(rows[0]); })
+    .then(function (rows) {
+      if (!rows || !rows.length) return;
+      majUI(rows[0]);
+      pousserPointGraphique(rows[0]);
+    })
     .catch(function () {});
 }
 
@@ -221,8 +225,13 @@ function chargerHistorique() {
 
 // Ajoute UN SEUL nouveau point aux 3 graphiques (au lieu de re-télécharger
 // tout l'historique) — c'est ce qui rend l'affichage vraiment fluide/temps
-// réel au lieu de "sauter" toutes les quelques secondes.
+// réel au lieu de "sauter" toutes les quelques secondes. Dédupliqué par
+// "ep" : Realtime ET le sondage de secours peuvent tous les deux livrer
+// la même ligne, on ne veut la tracer qu'une fois.
+let lastChartEp = null;
 function pousserPointGraphique(d) {
+  if (d.ep === lastChartEp) return;
+  lastChartEp = d.ep;
   const lbl = epToHHMMSS(d.ep);
   [[cT, ["t1", "t2", "t3"]], [cV, ["v1", "v2", "v3"]], [cA, ["a1", "a2", "a3"]]].forEach(function (pair) {
     const chart = pair[0], champs = pair[1];
@@ -291,7 +300,13 @@ window.onload = function () {
 
   chargerDernier();      // premier affichage immédiat
   chargerHistorique();   // remplit les graphiques une fois
-  demarrerRealtime();    // puis tout arrive en direct via WebSocket
+  demarrerRealtime();    // puis tout arrive en direct via WebSocket si actif
+
+  // Filet de secours : sonde quand même toutes les 3s en plus de Realtime.
+  // Si Realtime n'est pas activé côté Supabase (Database > Replication) ou
+  // si le canal WebSocket tombe silencieusement, la page continue quand
+  // même de se mettre à jour au lieu de rester bloquée sur "HORS LIGNE".
+  setInterval(chargerDernier, 3000);
 
   // Fait avancer le compteur "HORS LIGNE Xs" même sans nouvel événement
   setInterval(majBadgeLiaison, 2000);
