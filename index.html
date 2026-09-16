@@ -18,6 +18,10 @@ th,td{padding:6px;border:1px solid #eee;font-size:.85em;text-align:center}
 .mega-warn{display:none;background:#e74c3c;color:#fff;padding:6px 10px;border-radius:6px;font-size:.8em;margin-top:6px;text-align:center}
 .acq-badge{display:inline-block;padding:4px 12px;border-radius:16px;color:#fff;font-size:.85em;font-weight:bold;margin-left:8px}
 .hint{font-size:.75em;color:#888;margin-top:6px}
+.sdrow{display:flex;justify-content:space-between;align-items:center;padding:6px 4px;border-bottom:1px solid #eee}
+.sdrow:last-child{border-bottom:none}
+.sdrow .btn{padding:5px 10px;margin:0;font-size:.8em}
+.sdrow .active{color:#27ae60;font-weight:bold}
 </style>
 </head>
 <body>
@@ -78,8 +82,16 @@ th,td{padding:6px;border:1px solid #eee;font-size:.85em;text-align:center}
 
 <div class="card" style="text-align:center">
   <button id="ctrl" class="btn blue">...</button>
+  <button id="btnNewFile" class="btn orange">NOUVEAU FICHIER</button>
   <button id="btnExport" class="btn green">EXPORT CSV SD</button>
   <div class="hint" id="exportHint"></div>
+</div>
+
+<div class="card">
+  <b>FICHIERS SD</b>
+  <button id="btnRefreshList" class="btn blue" style="padding:6px 12px;font-size:.85em;margin-left:8px">ACTUALISER</button>
+  <div class="hint" id="sdlistHint"></div>
+  <ul id="sdlistItems" style="list-style:none;padding:0;margin:8px 0 0;font-family:monospace;font-size:.9em"></ul>
 </div>
 
 <script>
@@ -219,14 +231,18 @@ function chargerHistorique() {
     .catch(function () {});
 }
 
-document.getElementById("btnExport").onclick = function () {
-  const btn = document.getElementById("btnExport");
-  const hint = document.getElementById("exportHint");
-  btn.disabled = true;
-  hint.innerText = "Export demandé au boîtier — préparation du fichier...";
+function telechargerFichier(nom, hintEl, btnEl) {
+  hintEl.innerText = "Export demandé au boîtier — préparation du fichier...";
+  if (btnEl) btnEl.disabled = true;
 
-  envoyerCommande("EXPORT").then(function () {
-    const nom = currentSdFile || "export.csv";
+  // "EXPORT:<nom>" cible un fichier précis (celui choisi dans le volet
+  // "Fichiers SD") ; "EXPORT" seul (nom vide) reste l'ancien comportement,
+  // export du fichier actif — conservé pour compatibilité avec le bouton
+  // principal "EXPORT CSV SD".
+  const cmd = nom ? ("EXPORT:" + nom) : "EXPORT";
+
+  envoyerCommande(cmd).then(function () {
+    const nomFinal = nom || currentSdFile || "export.csv";
     // Le pipeline complet (attente du prochain cycle NB1500, lecture SD sur
     // le Mega, upload via le relais cellulaire jusqu'à Supabase) peut prendre
     // largement plus de 12s selon la taille du fichier et la qualité réseau.
@@ -239,29 +255,126 @@ document.getElementById("btnExport").onclick = function () {
     let tentative = 0;
     function essayerTelechargement() {
       tentative++;
-      hint.innerText = "Recherche du fichier sur Supabase... (tentative " + tentative + "/" + TENTATIVES_MAX + ")";
-      fetch(SUPABASE_URL + "/storage/v1/object/exports/" + encodeURIComponent(nom), { headers: HEADERS })
+      hintEl.innerText = "Recherche du fichier sur Supabase... (tentative " + tentative + "/" + TENTATIVES_MAX + ")";
+      fetch(SUPABASE_URL + "/storage/v1/object/exports/" + encodeURIComponent(nomFinal), { headers: HEADERS })
         .then(function (r) { if (!r.ok) throw new Error("not ready " + r.status); return r.blob(); })
         .then(function (blob) {
           const a = document.createElement("a");
           a.href = URL.createObjectURL(blob);
-          a.download = nom;
+          a.download = nomFinal;
           document.body.appendChild(a); a.click(); a.remove();
-          hint.innerText = "Téléchargé : " + nom;
-          btn.disabled = false;
+          hintEl.innerText = "Téléchargé : " + nomFinal;
+          if (btnEl) btnEl.disabled = false;
         })
         .catch(function () {
           if (tentative < TENTATIVES_MAX) {
             setTimeout(essayerTelechargement, INTERVALLE_MS);
           } else {
-            hint.innerText = "Échec : le fichier n'est jamais apparu sur Supabase (vérifier les logs du relais et les policies du bucket 'exports').";
-            btn.disabled = false;
+            hintEl.innerText = "Échec : le fichier n'est jamais apparu sur Supabase (vérifier les logs du relais et les policies du bucket 'exports').";
+            if (btnEl) btnEl.disabled = false;
           }
         });
     }
     setTimeout(essayerTelechargement, DELAI_INITIAL_MS);
   }).catch(function () {
-    hint.innerText = "Échec de la demande d'export (commande non envoyée à Supabase).";
+    hintEl.innerText = "Échec de la demande d'export (commande non envoyée à Supabase).";
+    if (btnEl) btnEl.disabled = false;
+  });
+}
+
+document.getElementById("btnExport").onclick = function () {
+  telechargerFichier("", document.getElementById("exportHint"), document.getElementById("btnExport"));
+};
+
+document.getElementById("btnNewFile").onclick = function () {
+  const btn = document.getElementById("btnNewFile");
+  btn.disabled = true;
+  envoyerCommande("NEWFILE")
+    .then(function () { document.getElementById("exportHint").innerText = "Nouveau fichier demandé au boîtier."; })
+    .catch(function () { document.getElementById("exportHint").innerText = "Échec de la demande de nouveau fichier."; })
+    .finally(function () { setTimeout(function () { btn.disabled = false; }, 1500); });
+};
+
+// ────────────────────────────────────────────────────────────────
+//  VOLET "FICHIERS SD" — liste + téléchargement au choix
+// ────────────────────────────────────────────────────────────────
+
+function afficherListeSD(filesStr) {
+  const ul = document.getElementById("sdlistItems");
+  ul.innerHTML = "";
+  const noms = (filesStr || "").split(",").map(s => s.trim()).filter(Boolean);
+  if (!noms.length) {
+    ul.innerHTML = "<li class='sdrow'>Aucun fichier (ou liste non actualisée).</li>";
+    return;
+  }
+  noms.forEach(function (nom) {
+    const li = document.createElement("li");
+    li.className = "sdrow";
+    const estActif = (nom === currentSdFile);
+    li.innerHTML = "<span" + (estActif ? " class='active'" : "") + ">" + nom + (estActif ? " (actif)" : "") + "</span>";
+    const btn = document.createElement("button");
+    btn.className = "btn blue";
+    btn.innerText = "Télécharger";
+    btn.onclick = function () { telechargerFichier(nom, document.getElementById("sdlistHint"), btn); };
+    li.appendChild(btn);
+    ul.appendChild(li);
+  });
+}
+
+function chargerListeSD() {
+  // Lecture passive de la dernière liste connue (sans redemander au
+  // boîtier) — utile au chargement de la page pour afficher tout de suite
+  // quelque chose, en attendant un clic sur "ACTUALISER".
+  fetch(SUPABASE_URL + "/rest/v1/sd_file_list?select=files,updated_at&id=eq.1", { headers: HEADERS })
+    .then(function (r) { return r.json(); })
+    .then(function (rows) {
+      if (rows && rows.length) afficherListeSD(rows[0].files);
+    })
+    .catch(function () {});
+}
+
+document.getElementById("btnRefreshList").onclick = function () {
+  const btn = document.getElementById("btnRefreshList");
+  const hint = document.getElementById("sdlistHint");
+  btn.disabled = true;
+  hint.innerText = "Demande de liste envoyée au boîtier...";
+
+  // Même logique de ré-essai que pour l'export : la liste transite par
+  // Serial1 puis le relais avant d'atteindre Supabase, donc pas de délai
+  // fixe unique, mais un court polling (aller-retour plus rapide qu'un
+  // export CSV, pas besoin d'attendre aussi longtemps).
+  const DELAI_INITIAL_MS = 3000;
+  const INTERVALLE_MS = 2000;
+  const TENTATIVES_MAX = 8; // 3s + 8*2s = 19s au total
+  const tAvant = Date.now();
+
+  envoyerCommande("SDLIST").then(function () {
+    let tentative = 0;
+    function essayer() {
+      tentative++;
+      hint.innerText = "Actualisation... (tentative " + tentative + "/" + TENTATIVES_MAX + ")";
+      fetch(SUPABASE_URL + "/rest/v1/sd_file_list?select=files,updated_at&id=eq.1", { headers: HEADERS })
+        .then(function (r) { return r.json(); })
+        .then(function (rows) {
+          if (rows && rows.length && new Date(rows[0].updated_at).getTime() >= tAvant) {
+            afficherListeSD(rows[0].files);
+            hint.innerText = "Liste à jour.";
+            btn.disabled = false;
+          } else if (tentative < TENTATIVES_MAX) {
+            setTimeout(essayer, INTERVALLE_MS);
+          } else {
+            hint.innerText = "Échec : pas de nouvelle liste reçue (vérifier la liaison boîtier).";
+            btn.disabled = false;
+          }
+        })
+        .catch(function () {
+          if (tentative < TENTATIVES_MAX) setTimeout(essayer, INTERVALLE_MS);
+          else { hint.innerText = "Échec de lecture Supabase."; btn.disabled = false; }
+        });
+    }
+    setTimeout(essayer, DELAI_INITIAL_MS);
+  }).catch(function () {
+    hint.innerText = "Échec de la demande d'actualisation.";
     btn.disabled = false;
   });
 };
@@ -270,7 +383,7 @@ window.onload = function () {
   cT = makeChart("cT", "#FF4136", "#FF851B", "#FFDC00");
   cV = makeChart("cV", "#0074D9", "#00B4D8", "#7B2FBE");
   cA = makeChart("cA", "#2ECC40", "#01FF70", "#3D9970");
-  chargerDernier(); chargerHistorique();
+  chargerDernier(); chargerHistorique(); chargerListeSD();
   setInterval(chargerDernier, 2000);
   setInterval(chargerHistorique, 3000);
 };
