@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Datalogger - Suivi temps reel</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+body{font-family:sans-serif;background:#1111ab;color:#333;margin:0;padding:5px}
+.card{background:#fff;margin:10px auto;padding:12px;border-radius:12px;max-width:600px}
+table{width:100%;border-collapse:collapse}
+th,td{padding:6px;border:1px solid #eee;font-size:.85em;text-align:center}
+.btn{padding:10px 18px;margin:4px;border-radius:8px;border:none;color:#fff;font-weight:bold;cursor:pointer}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.green{background:#27ae60}.blue{background:#2980b9}.orange{background:#e67e22}.grey{background:#7f8c8d}
+.ip{background:#000;color:#0f0;padding:8px;font-family:monospace;border-radius:5px;font-size:.9em}
+.badge{display:inline-block;padding:5px 14px;border-radius:20px;color:#fff;font-weight:bold;font-size:.95em}
+.chart-wrap{position:relative;height:200px}
+.mega-warn{display:none;background:#e74c3c;color:#fff;padding:6px 10px;border-radius:6px;font-size:.8em;margin-top:6px;text-align:center}
+.acq-badge{display:inline-block;padding:4px 12px;border-radius:16px;color:#fff;font-size:.85em;font-weight:bold;margin-left:8px}
+.hint{font-size:.75em;color:#888;margin-top:6px;min-height:1em}
+.file-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid #eee;font-family:monospace;font-size:.85em}
+.file-row .btn{padding:5px 10px;margin:0;font-size:.85em}
+.legend{font-size:.75em;margin-left:8px}
+</style>
+</head>
+<body>
+
+<div style="color:#fff;margin:15px 0;text-align:center">
+  <span id="ts">--</span>
+  <br><div class="ip">Projet Supabase : <span id="proj">yrxrkjwrwbeavuhbiwaa</span><br>Table : telemetry</div>
+</div>
+
+<div class="card" style="text-align:center;padding:10px">
+  <b>LIAISON BOÎTIER</b><br><br>
+  <span id="wbadge" class="badge grey">CONNEXION...</span>
+  <span id="acqbadge" class="acq-badge" style="background:#e74c3c">ARRET</span>
+</div>
+
+<div class="card">
+  <b>FICHIER SD :</b> <span id="sdfile" style="font-family:monospace;font-size:.9em">---</span>
+</div>
+
+<div class="card"><b>MEGA :</b> <small id="msg">En attente...</small>
+  <div id="megawarn" class="mega-warn">&#9888; MEGA OFFLINE — silence &gt; 5s</div>
+</div>
+
+<div class="card"><h3 style="margin:0 0 8px">MESURES TEMPS REEL</h3>
+  <table><tr><th>Voie</th><th>Temp (C)</th><th>Tension (V)</th><th>Courant (A)</th></tr>
+    <tr><td>1</td><td id="t0">--</td><td id="v0">--</td><td id="a0">--</td></tr>
+    <tr><td>2</td><td id="t1">--</td><td id="v1">--</td><td id="a1">--</td></tr>
+    <tr><td>3</td><td id="t2">--</td><td id="v2">--</td><td id="a2">--</td></tr>
+  </table>
+  <p>PUISSANCE : <b id="pwr">0.0</b> W &nbsp; ENERGIE : <b id="nrg" style="color:#27ae60">0.0000</b> Wh</p>
+</div>
+
+<div class="card"><b>TEMPERATURES (C)</b>
+  <span class="legend">
+    <span style="color:#FF4136">&#9632;</span> V1 &nbsp;
+    <span style="color:#FF851B">&#9632;</span> V2 &nbsp;
+    <span style="color:#FFDC00">&#9632;</span> V3
+  </span>
+  <div class="chart-wrap"><canvas id="cT"></canvas></div>
+</div>
+<div class="card"><b>TENSIONS (V)</b>
+  <span class="legend">
+    <span style="color:#0074D9">&#9632;</span> V1 &nbsp;
+    <span style="color:#00B4D8">&#9632;</span> V2 &nbsp;
+    <span style="color:#7B2FBE">&#9632;</span> V3
+  </span>
+  <div class="chart-wrap"><canvas id="cV"></canvas></div>
+</div>
+<div class="card"><b>COURANTS (A)</b>
+  <span class="legend">
+    <span style="color:#2ECC40">&#9632;</span> V1 &nbsp;
+    <span style="color:#01FF70">&#9632;</span> V2 &nbsp;
+    <span style="color:#3D9970">&#9632;</span> V3
+  </span>
+  <div class="chart-wrap"><canvas id="cA"></canvas></div>
+</div>
+
+<div class="card" style="text-align:center">
+  <button id="ctrl" class="btn blue" disabled>...</button>
+  <button id="btnNewFile" class="btn orange">NOUVEAU FICHIER</button>
+  <button id="btnExport" class="btn green btn-export">EXPORT CSV (FICHIER ACTIF)</button>
+  <div class="hint" id="cmdHint"></div>
+  <div class="hint" id="exportHint"></div>
+</div>
+
+<div class="card">
+  <b>FICHIERS SD</b>
+  <button id="btnList" class="btn blue" style="float:right;margin:0;padding:6px 12px">ACTUALISER</button>
+  <div style="clear:both"></div>
+  <div id="sdlist" style="margin-top:8px;font-size:.85em;color:#888">Liste non chargée.</div>
+  <div class="hint" id="listHint"></div>
+</div>
+
+<script>
+(function () {
+"use strict";
+
+// ────────────────────────────────────────────────────────────────
+//  CONFIGURATION
+// ────────────────────────────────────────────────────────────────
+var SUPABASE_URL = "https://yrxrkjwrwbeavuhbiwaa.supabase.co";
+var SUPABASE_KEY = "sb_publishable_LgGyx5PwzLQgmxssTaZ88g_K1cSEKTy";
+var HEADERS = { apikey: SUPABASE_KEY, Authorization: "Bearer " + SUPABASE_KEY };
+
+var POLL_MS = 2000;               // sondage des nouvelles mesures
+var RESYNC_MS = 120000;           // rechargement complet de l'historique
+var OFFLINE_AFTER_MS = 15000;     // silence au-delà duquel le boîtier est HORS LIGNE
+var MAX_POINTS = 180;             // points conservés par graphique
+var REQUEST_TIMEOUT_MS = 8000;
+var COLS = "id,ep,ts,msg,run,mega,t1,t2,t3,v1,v2,v3,a1,a2,a3,pwr,nrg,sdfile,acq";
+
+var EXPORT_DELAI_INITIAL_MS = 5000;
+var EXPORT_INTERVALLE_MS = 4000;
+var EXPORT_DUREE_MAX_MS = 15 * 60 * 1000;
+
+var GRAPHES = [
+  { id: "cT", couleurs: ["#FF4136", "#FF851B", "#FFDC00"], cles: ["t1", "t2", "t3"] },
+  { id: "cV", couleurs: ["#0074D9", "#00B4D8", "#7B2FBE"], cles: ["v1", "v2", "v3"] },
+  { id: "cA", couleurs: ["#2ECC40", "#01FF70", "#3D9970"], cles: ["a1", "a2", "a3"] }
+];
+
+// ────────────────────────────────────────────────────────────────
+//  ÉTAT
+// ────────────────────────────────────────────────────────────────
+var lastId = 0;
+var polling = false;
+var pollOk = true;
+var lastResync = 0;
+var firstSampleAt = 0;
+var lastSeenAt = 0;
+var sawChange = false;
+var isRunning = false;
+var currentSdFile = "";
+var exportEnCours = false;
+var listeEnCours = false;
+var charts = [];
+
+// ────────────────────────────────────────────────────────────────
+//  UTILITAIRES
+// ────────────────────────────────────────────────────────────────
+function el(id) { return document.getElementById(id); }
+function setText(id, t) { el(id).textContent = t; }
+function f(n, d) { return (typeof n === "number") ? n.toFixed(d) : "--"; }
+
+function nomValide(n) {
+  return typeof n === "string" && /^[A-Za-z0-9_\-][A-Za-z0-9_.\-]{0,20}$/.test(n) && n.indexOf(".") > 0;
+}
+
+function api(path, opts) {
+  var ctl = new AbortController();
+  var to = setTimeout(function () { ctl.abort(); }, REQUEST_TIMEOUT_MS);
+  var o = Object.assign({ headers: HEADERS, cache: "no-store", signal: ctl.signal }, opts || {});
+  return fetch(SUPABASE_URL + path, o).finally(function () { clearTimeout(to); });
+}
+
+function annuler(r) {
+  try { if (r && r.body && r.body.cancel) r.body.cancel(); } catch (e) {}
+}
+
+// L'epoch envoyé par le boîtier encode directement l'heure murale de Paris :
+// on le relit en UTC pour éviter tout double décalage de fuseau horaire.
+function epToHHMMSS(ep) {
+  if (typeof ep !== "number") return "--";
+  var d = new Date(ep * 1000);
+  var p = function (n) { return n < 10 ? "0" + n : "" + n; };
+  return p(d.getUTCHours()) + ":" + p(d.getUTCMinutes()) + ":" + p(d.getUTCSeconds());
+}
+
+// ────────────────────────────────────────────────────────────────
+//  COMMANDES
+// ────────────────────────────────────────────────────────────────
+function envoyerCommande(cmd) {
+  return api("/rest/v1/commands", {
+    method: "POST",
+    headers: Object.assign({}, HEADERS, { "Content-Type": "application/json", "Prefer": "return=minimal" }),
+    body: JSON.stringify({ cmd: cmd, consumed: false })
+  }).then(function (r) { return r.ok; }, function () { return false; });
+}
+
+function commande(cmd, libelle) {
+  el("cmdHint").textContent = "Envoi : " + libelle + "...";
+  return envoyerCommande(cmd).then(function (ok) {
+    el("cmdHint").textContent = ok
+      ? libelle + " envoyé — pris en compte au prochain échange avec le boîtier."
+      : "Échec : commande non envoyée à Supabase.";
+    return ok;
+  });
+}
+
+// ────────────────────────────────────────────────────────────────
+//  AFFICHAGE
+// ────────────────────────────────────────────────────────────────
+function majAcq(a) {
+  var b = el("acqbadge");
+  if (a === "R") { b.textContent = "EN COURS"; b.style.background = "#27ae60"; }
+  else if (a === "P") { b.textContent = "PAUSE"; b.style.background = "#e67e22"; }
+  else { b.textContent = "ARRET"; b.style.background = "#e74c3c"; }
+}
+
+function majLiaison() {
+  var wb = el("wbadge");
+  var now = Date.now();
+  var txt, col;
+  if (!pollOk) { txt = "SUPABASE INJOIGNABLE"; col = "#7f8c8d"; }
+  else if (!firstSampleAt) { txt = "CONNEXION..."; col = "#7f8c8d"; }
+  else if (sawChange) {
+    var age = now - lastSeenAt;
+    if (age < OFFLINE_AFTER_MS) { txt = "EN LIGNE"; col = "#27ae60"; }
+    else { txt = "HORS LIGNE " + Math.round(age / 1000) + "s"; col = "#e74c3c"; }
+  } else if (now - firstSampleAt < OFFLINE_AFTER_MS) { txt = "CONNEXION..."; col = "#7f8c8d"; }
+  else { txt = "HORS LIGNE"; col = "#e74c3c"; }
+  wb.textContent = txt;
+  wb.style.background = col;
+}
+
+function majUI(d) {
+  setText("ts", d.ts || "--");
+  setText("msg", d.msg || "");
+  el("megawarn").style.display = (d.mega === false) ? "block" : "none";
+  majAcq(d.acq || "S");
+
+  for (var i = 0; i < 3; i++) {
+    setText("t" + i, f(d["t" + (i + 1)], 1) + " C");
+    setText("v" + i, f(d["v" + (i + 1)], 1) + " V");
+    setText("a" + i, f(d["a" + (i + 1)], 3) + " A");
+  }
+  setText("pwr", f(d.pwr, 1));
+  setText("nrg", f(d.nrg, 4));
+
+  currentSdFile = d.sdfile || "";
+  setText("sdfile", currentSdFile || "---");
+
+  isRunning = !!d.run;
+  var b = el("ctrl");
+  b.disabled = false;
+  b.textContent = isRunning ? "ARRETER" : "DEMARRER";
+  b.style.background = isRunning ? "#c0392b" : "#27ae60";
+}
+
+// ────────────────────────────────────────────────────────────────
+//  GRAPHIQUES
+// ────────────────────────────────────────────────────────────────
+function pointFinal(cx) { return cx.dataIndex === cx.dataset.data.length - 1 ? 3 : 0; }
+
+function makeChart(g) {
+  var ctx = el(g.id).getContext("2d");
+  return new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: [],
+      datasets: g.couleurs.map(function (c, i) {
+        return {
+          label: "Voie " + (i + 1), data: [], borderColor: c, backgroundColor: c + "22",
+          tension: 0.3, borderWidth: 2.5, fill: false, pointRadius: pointFinal, pointBackgroundColor: c
+        };
+      })
+    },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: "top" } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 8, maxRotation: 0 } },
+        y: { grid: { color: function (c) { return c.tick.value === 0 ? "rgba(0,0,0,0.3)" : "rgba(0,0,0,0.06)"; } } }
+      }
+    }
+  });
+}
+
+// rows : lignes triées par id croissant. remplacer=true -> historique complet.
+function majGraphes(rows, remplacer) {
+  charts.forEach(function (g) {
+    var c = g.chart;
+    if (remplacer) {
+      c.data.labels = rows.map(function (r) { return epToHHMMSS(r.ep); });
+      g.cles.forEach(function (k, i) { c.data.datasets[i].data = rows.map(function (r) { return r[k]; }); });
+    } else {
+      rows.forEach(function (r) {
+        c.data.labels.push(epToHHMMSS(r.ep));
+        g.cles.forEach(function (k, i) { c.data.datasets[i].data.push(r[k]); });
+      });
+      while (c.data.labels.length > MAX_POINTS) {
+        c.data.labels.shift();
+        c.data.datasets.forEach(function (ds) { ds.data.shift(); });
+      }
+    }
+    c.update("none");
+  });
+}
+
+// ────────────────────────────────────────────────────────────────
+//  SONDAGE DES MESURES
+// ────────────────────────────────────────────────────────────────
+function poll() {
+  if (polling || document.hidden) return;
+  polling = true;
+  var complet = (lastId === 0) || (Date.now() - lastResync > RESYNC_MS);
+  var q = complet
+    ? "order=id.desc&limit=" + MAX_POINTS
+    : "id=gt." + lastId + "&order=id.asc&limit=" + MAX_POINTS;
+
+  api("/rest/v1/telemetry?select=" + COLS + "&" + q)
+    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then(function (rows) {
+      pollOk = true;
+      if (complet) lastResync = Date.now();
+      if (!Array.isArray(rows) || !rows.length) return;
+      if (complet) rows.reverse();
+
+      var dernier = rows[rows.length - 1];
+      var now = Date.now();
+      if (!firstSampleAt) firstSampleAt = now;
+      if (lastId !== 0 && dernier.id > lastId) { sawChange = true; lastSeenAt = now; }
+      lastId = Math.max(lastId, dernier.id);
+
+      majGraphes(rows, complet);
+      majUI(dernier);
+    })
+    .catch(function () { pollOk = false; })
+    .then(function () { polling = false; majLiaison(); });
+}
+
+// ────────────────────────────────────────────────────────────────
+//  EXPORT CSV
+// ────────────────────────────────────────────────────────────────
+function majBoutonsExport() {
+  var b = document.querySelectorAll(".btn-export");
+  for (var i = 0; i < b.length; i++) b[i].disabled = exportEnCours;
+}
+
+function lireObjet(nom) {
+  return api("/storage/v1/object/exports/" + encodeURIComponent(nom))
+    .then(function (r) {
+      if (!r.ok) { annuler(r); return null; }
+      return { lm: r.headers.get("Last-Modified") || "", r: r };
+    })
+    .catch(function () { return null; });
+}
+
+function telecharger(blob, nom) {
+  var a = document.createElement("a");
+  var url = URL.createObjectURL(blob);
+  a.href = url;
+  a.download = nom;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(function () { URL.revokeObjectURL(url); }, 10000);
+}
+
+// Le fichier n'est téléchargé qu'une fois que sa date de modification a
+// changé par rapport à celle observée avant la demande : évite de récupérer
+// une ancienne version du même nom restée sur Supabase.
+function exporter(nom) {
+  if (exportEnCours) return;
+  var hint = el("exportHint");
+  if (!nomValide(nom)) { hint.textContent = "Aucun fichier SD actif à exporter."; return; }
+
+  exportEnCours = true;
+  majBoutonsExport();
+  hint.textContent = "Préparation de l'export de " + nom + "...";
+  var debut = Date.now();
+
+  function fin(msg) { exportEnCours = false; majBoutonsExport(); hint.textContent = msg; }
+
+  lireObjet(nom).then(function (base) {
+    if (base) annuler(base.r);
+
+    function essayer() {
+      var ecoule = Date.now() - debut;
+      if (ecoule > EXPORT_DUREE_MAX_MS) {
+        fin("Échec : le fichier n'est pas apparu sur Supabase (vérifier le boîtier, les logs du relais et les policies du bucket 'exports').");
+        return;
+      }
+      hint.textContent = "Export de " + nom + " en cours... " + Math.round(ecoule / 1000) +
+        " s (un gros fichier peut demander plusieurs minutes)";
+      lireObjet(nom).then(function (obj) {
+        var nouveau = obj && (!base || obj.lm !== base.lm || (obj.lm === "" && ecoule > 20000));
+        if (!nouveau) {
+          if (obj) annuler(obj.r);
+          setTimeout(essayer, EXPORT_INTERVALLE_MS);
+          return;
+        }
+        return obj.r.blob().then(function (blob) {
+          telecharger(blob, nom);
+          fin("Téléchargé : " + nom);
+        });
+      }).catch(function () { setTimeout(essayer, EXPORT_INTERVALLE_MS); });
+    }
+
+    return envoyerCommande("EXPORT:" + nom).then(function (ok) {
+      if (!ok) { fin("Échec de la demande d'export (commande non envoyée à Supabase)."); return; }
+      setTimeout(essayer, EXPORT_DELAI_INITIAL_MS);
+    });
+  });
+}
+
+// ────────────────────────────────────────────────────────────────
+//  LISTE DES FICHIERS SD
+// ────────────────────────────────────────────────────────────────
+function lireListe() {
+  return api("/rest/v1/sd_file_list?select=files,updated_at&id=eq.1")
+    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then(function (rows) { return (rows && rows[0]) || null; });
+}
+
+function rendreListe(csv) {
+  var cont = el("sdlist");
+  cont.textContent = "";
+  var noms = String(csv || "").split(",").map(function (s) { return s.trim(); }).filter(nomValide);
+  if (!noms.length) { cont.textContent = "Aucun fichier CSV sur la carte SD."; return; }
+  noms.forEach(function (nom) {
+    var row = document.createElement("div");
+    row.className = "file-row";
+    var label = document.createElement("span");
+    label.textContent = nom + (nom.toLowerCase() === currentSdFile.toLowerCase() ? "  (actif)" : "");
+    var b = document.createElement("button");
+    b.className = "btn orange btn-export";
+    b.textContent = "Télécharger";
+    b.disabled = exportEnCours;
+    b.addEventListener("click", function () { exporter(nom); });
+    row.appendChild(label);
+    row.appendChild(b);
+    cont.appendChild(row);
+  });
+}
+
+function actualiserListe() {
+  if (listeEnCours) return;
+  listeEnCours = true;
+  var btn = el("btnList");
+  var hint = el("listHint");
+  btn.disabled = true;
+  hint.textContent = "Demande de la liste au boîtier...";
+
+  function fin(msg) { listeEnCours = false; btn.disabled = false; hint.textContent = msg; }
+
+  lireListe().catch(function () { return null; }).then(function (base) {
+    var ref = base ? base.updated_at : null;
+    return envoyerCommande("SDLIST").then(function (ok) {
+      if (!ok) { fin("Échec : commande non envoyée à Supabase."); return; }
+      var t0 = Date.now();
+      (function boucle() {
+        if (Date.now() - t0 > 45000) {
+          fin("La liste n'a pas été mise à jour (boîtier hors ligne, ou table 'sd_file_list' absente de Supabase).");
+          return;
+        }
+        lireListe().then(function (row) {
+          if (row && row.updated_at !== ref) { rendreListe(row.files); fin("Liste mise à jour."); }
+          else setTimeout(boucle, 3000);
+        }).catch(function () { setTimeout(boucle, 3000); });
+      })();
+    });
+  });
+}
+
+// ────────────────────────────────────────────────────────────────
+//  DÉMARRAGE
+// ────────────────────────────────────────────────────────────────
+var ctrlBloque = false;
+el("ctrl").addEventListener("click", function () {
+  if (ctrlBloque) return;
+  ctrlBloque = true;
+  el("ctrl").disabled = true;
+  commande(isRunning ? "STOP" : "START", isRunning ? "Arrêt" : "Démarrage");
+  setTimeout(function () { ctrlBloque = false; el("ctrl").disabled = false; }, 4000);
+});
+el("btnNewFile").addEventListener("click", function () { commande("NEWFILE", "Nouveau fichier"); });
+el("btnExport").addEventListener("click", function () { exporter(currentSdFile); });
+el("btnList").addEventListener("click", actualiserListe);
+document.addEventListener("visibilitychange", function () { if (!document.hidden) poll(); });
+
+window.addEventListener("load", function () {
+  if (typeof Chart !== "undefined") {
+    GRAPHES.forEach(function (g) { g.chart = makeChart(g); charts.push(g); });
+  }
+  poll();
+  setInterval(poll, POLL_MS);
+  setInterval(majLiaison, 1000);
+  lireListe().then(function (row) { if (row) rendreListe(row.files); }).catch(function () {});
+});
+
+})();
+</script>
+</body>
+</html>
