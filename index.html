@@ -22,6 +22,10 @@ th,td{padding:6px;border:1px solid #eee;font-size:.85em;text-align:center}
 .file-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid #eee;font-family:monospace;font-size:.85em}
 .file-row .btn{padding:5px 10px;margin:0;font-size:.85em}
 .legend{font-size:.75em;margin-left:8px}
+.row{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:8px;margin:8px 0}
+.sel{padding:8px 10px;border-radius:8px;border:1px solid #bbb;font-size:.95em;background:#fff;color:#333}
+.big{font-family:monospace;font-size:1.6em;font-weight:bold;color:#2c3e50}
+.cur{font-size:.8em;color:#555}
 </style>
 </head>
 <body>
@@ -87,6 +91,31 @@ th,td{padding:6px;border:1px solid #eee;font-size:.85em;text-align:center}
   <div class="hint" id="exportHint"></div>
 </div>
 
+<div class="card" style="text-align:center">
+  <b>ACQUISITION</b>
+  <div style="margin-top:6px">Durée : <span class="big" id="duree">--:--:--</span></div>
+  <div class="hint" id="dureeHint"></div>
+  <div class="row">
+    <label for="selRate">Fréquence d'enregistrement :</label>
+    <select id="selRate" class="sel"></select>
+    <button id="btnRate" class="btn blue" style="margin:0">APPLIQUER</button>
+  </div>
+  <div class="cur" id="rateCur">Actuelle : --</div>
+  <div class="hint" id="rateHint">Plus la fréquence est élevée, plus l'écran du boîtier se rafraîchit lentement (≤ 100 ms).</div>
+</div>
+
+<div class="card" style="text-align:center">
+  <b>CALIBRE PINCE — VOIE 3</b>
+  <div class="row">
+    <label for="selCal">Sensibilité de la pince :</label>
+    <select id="selCal" class="sel"></select>
+    <input id="inpCal" class="sel" type="number" min="0.01" max="100000" step="any" style="width:90px;display:none" placeholder="mV/A">
+    <button id="btnCal" class="btn blue" style="margin:0">APPLIQUER</button>
+  </div>
+  <div class="cur" id="calCur">Actuelle : --</div>
+  <div class="hint" id="calHint">Courant (A) = tension de sortie de la pince (V) ÷ sensibilité (V/A). À régler selon le calibre de la pince.</div>
+</div>
+
 <div class="card">
   <b>FICHIERS SD</b>
   <button id="btnList" class="btn blue" style="float:right;margin:0;padding:6px 12px">ACTUALISER</button>
@@ -111,7 +140,11 @@ var RESYNC_MS = 120000;           // rechargement complet de l'historique
 var OFFLINE_AFTER_MS = 15000;     // silence au-delà duquel le boîtier est HORS LIGNE
 var MAX_POINTS = 180;             // points conservés par graphique
 var REQUEST_TIMEOUT_MS = 8000;
-var COLS = "id,ep,ts,msg,run,mega,t1,t2,t3,v1,v2,v3,a1,a2,a3,pwr,nrg,sdfile,acq";
+var COLS_BASE = "id,ep,ts,msg,run,mega,t1,t2,t3,v1,v2,v3,a1,a2,a3,pwr,nrg,sdfile,acq";
+var COLS_EXT = COLS_BASE + ",dur,per,eff,cal";   // colonnes ajoutees en V9.1 (voir SQL)
+var VOIE_PINCE = 3;                              // voie dont le calibre est reglable ici
+var RATES = [[20,"20 ms (50 Hz)"],[50,"50 ms (20 Hz)"],[100,"100 ms (10 Hz)"],[200,"200 ms (5 Hz)"],[500,"500 ms (2 Hz)"],[1000,"1 s"],[2000,"2 s"],[5000,"5 s"],[10000,"10 s"]];
+var CALIBRES = [1, 10, 100, 1000];               // mV/A proposes (+ valeur libre)
 
 var EXPORT_DELAI_INITIAL_MS = 5000;
 var EXPORT_INTERVALLE_MS = 4000;
@@ -138,6 +171,9 @@ var currentSdFile = "";
 var exportEnCours = false;
 var listeEnCours = false;
 var charts = [];
+var colsEtendues = true;          // passe a false si la table n'a pas encore les colonnes dur/per/eff/cal
+var dureeBase = null, dureeRecuAt = 0, acqEtat = "S";
+var rateTouche = false, calTouche = false;
 
 // ────────────────────────────────────────────────────────────────
 //  UTILITAIRES
@@ -239,6 +275,91 @@ function majUI(d) {
   b.disabled = false;
   b.textContent = isRunning ? "ARRETER" : "DEMARRER";
   b.style.background = isRunning ? "#c0392b" : "#27ae60";
+
+  majAcquisitionUI(d);
+}
+
+// ────────────────────────────────────────────────────────────────
+//  DUREE, CADENCE ET CALIBRE
+// ────────────────────────────────────────────────────────────────
+function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+function fmtDuree(s) {
+  s = Math.max(0, Math.floor(s));
+  return pad2(Math.floor(s / 3600)) + ":" + pad2(Math.floor(s / 60) % 60) + ":" + pad2(s % 60);
+}
+
+// La durée est fournie par le boîtier (pauses exclues, comme sur son écran) ;
+// entre deux mesures elle avance localement tant que le boîtier est en ligne.
+function majDuree() {
+  var txt = "--:--:--";
+  if (typeof dureeBase === "number") {
+    var s = dureeBase;
+    if (acqEtat === "R" && sawChange && (Date.now() - lastSeenAt) < OFFLINE_AFTER_MS) {
+      s += (Date.now() - dureeRecuAt) / 1000;
+    }
+    txt = fmtDuree(s);
+  }
+  setText("duree", txt);
+  setText("dureeHint", colsEtendues ? "" : "Durée indisponible : colonnes Supabase à créer (SQL fourni avec V9.1).");
+}
+
+function majAcquisitionUI(d) {
+  acqEtat = d.acq || "S";
+  if (typeof d.dur === "number") { dureeBase = d.dur; dureeRecuAt = Date.now(); }
+  majDuree();
+
+  if (typeof d.per === "number" && d.per > 0) {
+    var txt = "Actuelle : " + d.per + " ms";
+    if (acqEtat === "R" && typeof d.eff === "number" && d.eff > 0) txt += " (réelle : " + d.eff + " ms)";
+    setText("rateCur", txt);
+    if (!rateTouche) {
+      var sr = el("selRate"), ok = false;
+      for (var i = 0; i < sr.options.length; i++) if (Number(sr.options[i].value) === d.per) { sr.selectedIndex = i; ok = true; }
+      if (!ok) { var o = document.createElement("option"); o.value = d.per; o.textContent = d.per + " ms"; sr.appendChild(o); sr.value = d.per; }
+    }
+  } else {
+    setText("rateCur", "Actuelle : -- (boîtier ou colonnes Supabase non à jour)");
+  }
+
+  var cals = typeof d.cal === "string" ? d.cal.split(",") : [];
+  var v = parseFloat(cals[VOIE_PINCE - 1]);
+  if (isFinite(v)) {
+    setText("calCur", "Actuelle : " + v + " mV/A");
+    if (!calTouche) afficherCalibre(v);
+  } else {
+    setText("calCur", "Actuelle : --");
+  }
+}
+
+function afficherCalibre(v) {
+  var sc = el("selCal"), ic = el("inpCal");
+  var idx = CALIBRES.indexOf(v);
+  if (idx >= 0) { sc.selectedIndex = idx; ic.style.display = "none"; }
+  else { sc.selectedIndex = CALIBRES.length; ic.style.display = ""; ic.value = v; }
+}
+
+function initReglages() {
+  var sr = el("selRate");
+  RATES.forEach(function (r) { var o = document.createElement("option"); o.value = r[0]; o.textContent = r[1]; sr.appendChild(o); });
+  sr.value = 500;
+  sr.addEventListener("change", function () { rateTouche = true; });
+  el("btnRate").addEventListener("click", function () {
+    var ms = Number(sr.value);
+    var lib = sr.options[sr.selectedIndex].textContent;
+    commande("RATE:" + ms, "Fréquence " + lib).then(function () { rateTouche = false; });
+  });
+
+  var sc = el("selCal"), ic = el("inpCal");
+  CALIBRES.forEach(function (c) { var o = document.createElement("option"); o.value = c; o.textContent = c + " mV/A"; sc.appendChild(o); });
+  var oa = document.createElement("option"); oa.value = "autre"; oa.textContent = "Autre…"; sc.appendChild(oa);
+  sc.value = 100;
+  sc.addEventListener("change", function () { calTouche = true; ic.style.display = (sc.value === "autre") ? "" : "none"; });
+  ic.addEventListener("input", function () { calTouche = true; });
+  el("btnCal").addEventListener("click", function () {
+    var v = (sc.value === "autre") ? Number(ic.value) : Number(sc.value);
+    if (!isFinite(v) || v < 0.01 || v > 100000) { el("calHint").textContent = "Valeur invalide (0,01 à 100000 mV/A)."; return; }
+    commande("PINCE:" + VOIE_PINCE + ":" + String(v), "Calibre voie " + VOIE_PINCE + " : " + v + " mV/A").then(function () { calTouche = false; });
+  });
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -302,9 +423,14 @@ function poll() {
     ? "order=id.desc&limit=" + MAX_POINTS
     : "id=gt." + lastId + "&order=id.asc&limit=" + MAX_POINTS;
 
-  api("/rest/v1/telemetry?select=" + COLS + "&" + q)
-    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+  api("/rest/v1/telemetry?select=" + (colsEtendues ? COLS_EXT : COLS_BASE) + "&" + q)
+    .then(function (r) {
+      if (r.status === 400 && colsEtendues) { colsEtendues = false; annuler(r); return null; }   // colonnes absentes : repli
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    })
     .then(function (rows) {
+      if (rows === null) return;
       pollOk = true;
       if (complet) lastResync = Date.now();
       if (!Array.isArray(rows) || !rows.length) return;
@@ -483,8 +609,10 @@ window.addEventListener("load", function () {
   if (typeof Chart !== "undefined") {
     GRAPHES.forEach(function (g) { g.chart = makeChart(g); charts.push(g); });
   }
+  initReglages();
   poll();
   setInterval(poll, POLL_MS);
+  setInterval(majDuree, 250);
   setInterval(majLiaison, 1000);
   lireListe().then(function (row) { if (row) rendreListe(row.files); }).catch(function () {});
 });
